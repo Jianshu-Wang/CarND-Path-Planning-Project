@@ -7,11 +7,15 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "helpers.h"
 #include "json.hpp"
+#include "spline.h"
+
+using namespace std;
 
 // for convenience
 using nlohmann::json;
 using std::string;
 using std::vector;
+
 
 int main() {
   uWS::Hub h;
@@ -50,8 +54,14 @@ int main() {
     map_waypoints_dy.push_back(d_y);
   }
 
+    // start in lane 1
+  int my_ref_lane = 1;
+  // have a reference velocity to target
+  double my_ref_vel = 0; // mph
+
+
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
-               &map_waypoints_dx,&map_waypoints_dy]
+               &map_waypoints_dx,&map_waypoints_dy,&my_ref_vel,&my_ref_lane]
               (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
@@ -86,7 +96,8 @@ int main() {
 
           // Sensor Fusion Data, a list of all other cars on the same side 
           //   of the road.
-          auto sensor_fusion = j[1]["sensor_fusion"];
+          auto other_cars = j[1]["sensor_fusion"];
+
 
           json msgJson;
 
@@ -97,6 +108,214 @@ int main() {
            * TODO: define a path made up of (x,y) points that the car will visit
            *   sequentially every .02 seconds
            */
+          if (previous_path_x.size() > 0) {
+            car_s = end_path_s;
+          }
+
+          bool change_lanes_or_slow_down = false;
+          bool dont_go_left = (my_ref_lane == 0);
+          bool dont_go_right = (my_ref_lane == 2);
+          short my_lane = ((short)floor(car_d/4));
+          bool changing_lanes = (my_lane != my_ref_lane);
+          double min_dist_left = 999.0;
+          double min_dist_here = 999.0;
+          double min_dist_right = 999.0;
+          int other_waypoint_idx = NextWaypoint(car_x, car_y, car_yaw, map_waypoints_x, map_waypoints_y);
+          double other_waypoint_dx = map_waypoints_dx[other_waypoint_idx];
+          double other_waypoint_dy = map_waypoints_dy[other_waypoint_idx];
+
+          // find ref_v to use
+          // go through all cars
+          for (int i = 0; i < other_cars.size(); i++) {
+            // check whether car is in my lane
+            double o_x = other_cars[i][1];
+            double o_y = other_cars[i][2];
+            float o_d = other_cars[i][6];
+            double o_vx = other_cars[i][3];
+            double o_vy = other_cars[i][4];
+            double o_v = sqrt(o_vx*o_vx+o_vy*o_vy);
+            double o_s = other_cars[i][5];
+            // calculate vd by dot product with d-vector
+            double o_vd = o_vx*other_waypoint_dx + o_vy*other_waypoint_dy;
+            // calculate vs by knowledge vs*vs + vd*vd = vx*vx + vy*vy
+            double o_vs = sqrt(o_vx*o_vx + o_vy*o_vy - o_vd*o_vd);
+            // project other cars position outwards based on its 
+            // velocity times the distance at which we apply the first
+            // action (end of current path)
+            o_s += ((double)previous_path_x.size()*.02*o_vs);
+            // o_d += ((double)previous_path_size*.02*o_vd); // TODO accurate?
+            short o_lane = ((short)floor(o_d/4));
+            // what is the other car doing?
+            bool o_is_going_right = (o_vd > 2.0);
+            bool o_is_going_left  = (o_vd < -2.0);
+            short o_direction     = o_is_going_right ? 1 : (o_is_going_left ? -1 : 0);
+            short o_merging_lane  = o_lane + o_direction;
+            // check if the car is in my lane or is (potentially) entering my lane
+            bool o_is_in_my_lane  = (o_lane == my_ref_lane) || (o_merging_lane == my_ref_lane);
+            bool o_is_left  = (o_lane == my_ref_lane-1) || (o_merging_lane == my_ref_lane-1);
+            bool o_is_right = (o_lane == my_ref_lane+1) || (o_merging_lane == my_ref_lane+1);
+            // determine if car is 30m ahead, 15m behind or closer than 10m
+            double o_distance = o_s-car_s;
+            bool o_is_ahead  = (o_distance > 0.0) && (o_distance < 30.0);
+            bool o_is_close  = abs(o_s-car_s) < 10;
+            bool o_is_behind = (o_distance < 0.0) && (o_distance > -15.0);
+            // update leading vehicle distance
+            if (o_distance > 0.0) {
+              if (o_is_in_my_lane) {
+                if (o_distance < min_dist_here) min_dist_here = o_distance;
+              } else if (o_is_left) {
+                if (o_distance < min_dist_left) min_dist_left = o_distance;
+              } else if (o_is_right) {
+                if (o_distance < min_dist_right) min_dist_right = o_distance;
+              }
+            }
+            // check if car is slower
+            bool o_is_slower = o_v-my_ref_vel < 0;
+            // is there a car in my lane ahead of me?
+            // then we either have to switch lanes or decellerate
+            change_lanes_or_slow_down = change_lanes_or_slow_down || (o_is_ahead && o_is_in_my_lane);
+            // check if the car impedes my ability to swith lanes; if...
+            // - it is closer than 30m ahead me and slower than me
+            // - it is closer than 15m behind me and faster than me
+            // - it is closer than 10m to me (better just wait until the situation becomes more clear)
+            bool o_is_obstacle = ( (o_is_ahead && o_is_slower)
+                                      || (o_is_behind && !o_is_slower)
+                                      || o_is_close
+                              );
+            // don't switch lanes if the car is dangerous
+            dont_go_left  = dont_go_left || (o_is_left && o_is_obstacle);
+            dont_go_right = dont_go_right || (o_is_right && o_is_obstacle);
+          }
+
+          // don't switch lanes if leading car in target lane is closer than
+          // leading car in current lane
+          dont_go_left  = dont_go_left  || (min_dist_left < min_dist_here);
+          dont_go_right = dont_go_right || (min_dist_right < min_dist_here);
+          
+          // if car too close is in front of car
+          if (change_lanes_or_slow_down) {
+            // if we are already changing lanes or cannot change 
+            if (changing_lanes || (dont_go_left && dont_go_right) || my_ref_vel < 20) {
+              // slow down instead (obeying max. accell. & velocity)
+              if (my_ref_vel > 5)
+                my_ref_vel -= .224;
+            } else if (!dont_go_left) {
+              // if left lane free, go there 
+              my_ref_lane = (my_ref_lane - 1);
+            } else if (!dont_go_right) {
+              // if right lane free, go there
+              my_ref_lane = (my_ref_lane + 1);
+            }
+          } else if (my_ref_vel < 49.5) {
+            // if we are too slow, speed up (obeying max. accell. & velocity)
+            my_ref_vel += .224;
+          }
+
+          // create a list of widely spaced (x,y) waypoints, evenly spaced at
+          // 30m, later we will interpolate these waypoints with a spline and 
+          // fill it in with more points
+          vector<double> control_x;
+          vector<double> control_y;
+
+          // reference x,y,yaw states: the state where we can actually control
+          // the car right now; either the current state or the end of the
+          // path calculated in the previous round (kept in order to smooth
+          // the trajectory
+          double my_ref_x = car_x;
+          double my_ref_y = car_y;
+          double ref_yaw = deg2rad(car_yaw);
+
+          if (previous_path_x.size() < 2) {
+            // if previous size is almost empty, use the car as starting ref
+            // but add one point behind it to make the path tangent to the car
+            double my_prev_x = car_x - cos(car_yaw);
+            double my_prev_y = car_y - sin(car_yaw);
+            control_x.push_back(my_prev_x);
+            control_x.push_back(car_x);
+            control_y.push_back(my_prev_y);
+            control_y.push_back(car_y);
+          } else {
+            // redefine reference state as previous path and point
+            my_ref_x = previous_path_x[previous_path_x.size()-1];
+            my_ref_y = previous_path_y[previous_path_x.size()-1];
+            double my_prev_x = previous_path_x[previous_path_x.size()-2];
+            double my_prev_y = previous_path_y[previous_path_x.size()-2];
+            ref_yaw = atan2(my_ref_y-my_prev_y, my_ref_x-my_prev_x);
+            // use two points that make the path tangent to the previous 
+            // end point
+            control_x.push_back(my_prev_x);
+            control_x.push_back(my_ref_x);
+            control_y.push_back(my_prev_y);
+            control_y.push_back(my_ref_y);
+          }
+
+          // In Frenet add evenly 30m spaced points ahead of the starting ref
+          for (int spacing = 30; spacing <= 90; spacing += 30) {
+            vector<double> controlpoint = getXY(car_s+spacing, (2+4*my_ref_lane), 
+                    map_waypoints_s, map_waypoints_x, map_waypoints_y);
+            control_x.push_back(controlpoint[0]);
+            control_y.push_back(controlpoint[1]);
+          }
+
+          // transform controlpoints to car coordinate starting from 
+          // reference position
+          vector<double> control_x_car;
+          vector<double> control_y_car;
+
+          for (int i = 0; i < control_x.size(); i++) {
+            // shift
+            double x_shifted = control_x[i]-my_ref_x;
+            double y_shifted = control_y[i]-my_ref_y;
+            // rotate
+            control_x_car.push_back(x_shifted*cos(0-ref_yaw)-y_shifted*sin(0-ref_yaw));
+            control_y_car.push_back(x_shifted*sin(0-ref_yaw)+y_shifted*cos(0-ref_yaw));
+          }
+
+          // create a spline & set (x,y) points to the spline
+          tk::spline spline_car;
+          spline_car.set_points(control_x_car, control_y_car);
+
+          // sample (x,y) points from spline
+          vector<double> my_next_x;
+          vector<double> my_next_y;
+
+          // start with all of the previous path points from last time
+          for (int i = 0; i < previous_path_x.size(); i++) {
+            my_next_x.push_back(previous_path_x[i]);
+            my_next_y.push_back(previous_path_y[i]);
+          }
+
+          // calculate with which distance to interpolate along the spline 
+          // so we travel at our desired reference velocity
+          // path will extend 30m ahead in x direction
+          double target_x_car = 30.0;
+          // get y value for that distance
+          double target_y_car = spline_car(target_x_car);
+          // calculate euclidean distance travelled to that point
+          double target_dist = sqrt(target_x_car*target_x_car + target_y_car*target_y_car);
+          // calculate spacing of points needed to find reference velocity
+          double num_points = target_dist / (.02*my_ref_vel/2.24);
+
+          // fill up the rest of our path planner so we have 50 points
+          double recent_x_car = 0;
+          for (int i = 1; i <= 50-previous_path_x.size(); i++) {
+            double x_car = recent_x_car + target_x_car/num_points;
+            double y_car = spline_car(x_car);
+            recent_x_car = x_car;
+            // transform car coordinates to world coordinates
+            // rotate
+            double x = (x_car*cos(ref_yaw)-y_car*sin(ref_yaw));
+            double y = (x_car*sin(ref_yaw)+y_car*cos(ref_yaw));
+            // shift
+            x += my_ref_x;
+            y += my_ref_y;
+            // add to return value
+            my_next_x.push_back(x);
+            my_next_y.push_back(y);
+          }
+
+          
+          
 
 
           msgJson["next_x"] = next_x_vals;
