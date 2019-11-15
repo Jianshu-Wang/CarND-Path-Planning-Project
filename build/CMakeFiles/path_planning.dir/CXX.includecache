@@ -839,6 +839,8 @@ vector
 /home/ziirobot/Desktop/CarND-Path-Planning-Project/src/main.cpp
 uWS/uWS.h
 -
+math.h
+-
 fstream
 -
 iostream
@@ -855,4 +857,16 @@ helpers.h
 /home/ziirobot/Desktop/CarND-Path-Planning-Project/src/helpers.h
 json.hpp
 /home/ziirobot/Desktop/CarND-Path-Planning-Project/src/json.hpp
+spline.h
+/home/ziirobot/Desktop/CarND-Path-Planning-Project/src/spline.h
+
+/home/ziirobot/Desktop/CarND-Path-Planning-Project/src/spline.h
+cstdio
+-
+cassert
+-
+vector
+-
+algorithm
+-
 

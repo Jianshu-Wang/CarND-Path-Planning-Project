@@ -1,4 +1,5 @@
 #include <uWS/uWS.h>
+#include <math.h>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -96,45 +97,53 @@ int main() {
 
           // Sensor Fusion Data, a list of all other cars on the same side 
           //   of the road.
-          auto other_cars = j[1]["sensor_fusion"];
+          auto sensor_fusion = j[1]["sensor_fusion"];
+          int previous_path_size = previous_path_x.size();
 
-
-          json msgJson;
-
-          vector<double> next_x_vals;
-          vector<double> next_y_vals;
-
-          /**
-           * TODO: define a path made up of (x,y) points that the car will visit
-           *   sequentially every .02 seconds
-           */
-          if (previous_path_x.size() > 0) {
+          // if previous path does contain points, assume car is at
+          // end position of previous path
+          if (previous_path_size > 0) {
             car_s = end_path_s;
           }
 
+          // high level decision criteria:
+          // registers if we are too close to the vehicle in front of us
+          // if true -> try to change lanes or slow down
+          // if false -> just stay in lane and match speed
           bool change_lanes_or_slow_down = false;
+          // in order to determine whether we can change lanes:
+          // is any of the two lanes left/right blocked by a car just 
+          // behind us?
+          // if (both) true -> slow down
+          // if (any) false -> change lane
+          // already initialized to take into account whether there actually
+          // is a left lane / right lane
           bool dont_go_left = (my_ref_lane == 0);
           bool dont_go_right = (my_ref_lane == 2);
+          // changing lanes -> no double-lane-changes == too high accell!
           short my_lane = ((short)floor(car_d/4));
           bool changing_lanes = (my_lane != my_ref_lane);
+          // distance of leading vehicle ahead
           double min_dist_left = 999.0;
           double min_dist_here = 999.0;
           double min_dist_right = 999.0;
+            
+          // find unit normal vector at currernt position
           int other_waypoint_idx = NextWaypoint(car_x, car_y, car_yaw, map_waypoints_x, map_waypoints_y);
           double other_waypoint_dx = map_waypoints_dx[other_waypoint_idx];
           double other_waypoint_dy = map_waypoints_dy[other_waypoint_idx];
 
           // find ref_v to use
           // go through all cars
-          for (int i = 0; i < other_cars.size(); i++) {
+          for (int i = 0; i < sensor_fusion.size(); i++) {
             // check whether car is in my lane
-            double o_x = other_cars[i][1];
-            double o_y = other_cars[i][2];
-            float o_d = other_cars[i][6];
-            double o_vx = other_cars[i][3];
-            double o_vy = other_cars[i][4];
+            double o_x = sensor_fusion[i][1];
+            double o_y = sensor_fusion[i][2];
+            float o_d = sensor_fusion[i][6];
+            double o_vx = sensor_fusion[i][3];
+            double o_vy = sensor_fusion[i][4];
             double o_v = sqrt(o_vx*o_vx+o_vy*o_vy);
-            double o_s = other_cars[i][5];
+            double o_s = sensor_fusion[i][5];
             // calculate vd by dot product with d-vector
             double o_vd = o_vx*other_waypoint_dx + o_vy*other_waypoint_dy;
             // calculate vs by knowledge vs*vs + vd*vd = vx*vx + vy*vy
@@ -142,7 +151,7 @@ int main() {
             // project other cars position outwards based on its 
             // velocity times the distance at which we apply the first
             // action (end of current path)
-            o_s += ((double)previous_path_x.size()*.02*o_vs);
+            o_s += ((double)previous_path_size*.02*o_vs);
             // o_d += ((double)previous_path_size*.02*o_vd); // TODO accurate?
             short o_lane = ((short)floor(o_d/4));
             // what is the other car doing?
@@ -225,7 +234,7 @@ int main() {
           double my_ref_y = car_y;
           double ref_yaw = deg2rad(car_yaw);
 
-          if (previous_path_x.size() < 2) {
+          if (previous_path_size < 2) {
             // if previous size is almost empty, use the car as starting ref
             // but add one point behind it to make the path tangent to the car
             double my_prev_x = car_x - cos(car_yaw);
@@ -236,10 +245,10 @@ int main() {
             control_y.push_back(car_y);
           } else {
             // redefine reference state as previous path and point
-            my_ref_x = previous_path_x[previous_path_x.size()-1];
-            my_ref_y = previous_path_y[previous_path_x.size()-1];
-            double my_prev_x = previous_path_x[previous_path_x.size()-2];
-            double my_prev_y = previous_path_y[previous_path_x.size()-2];
+            my_ref_x = previous_path_x[previous_path_size-1];
+            my_ref_y = previous_path_y[previous_path_size-1];
+            double my_prev_x = previous_path_x[previous_path_size-2];
+            double my_prev_y = previous_path_y[previous_path_size-2];
             ref_yaw = atan2(my_ref_y-my_prev_y, my_ref_x-my_prev_x);
             // use two points that make the path tangent to the previous 
             // end point
@@ -314,12 +323,19 @@ int main() {
             my_next_y.push_back(y);
           }
 
-          
+          json msgJson;
+
+          vector<double> next_x_vals;
+          vector<double> next_y_vals;
+
           
 
 
-          msgJson["next_x"] = next_x_vals;
-          msgJson["next_y"] = next_y_vals;
+          
+
+
+          msgJson["next_x"] = my_next_x;
+          msgJson["next_y"] = my_next_y;
 
           auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
