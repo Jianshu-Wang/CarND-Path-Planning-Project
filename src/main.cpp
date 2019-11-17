@@ -207,7 +207,7 @@ int main() {
             if (changing_lanes || (dont_go_left && dont_go_right) || my_ref_vel < 20) {
               // slow down instead (obeying max. accell. & velocity)
               if (my_ref_vel > 5)
-                my_ref_vel -= .224;
+                my_ref_vel -= .3;
             } else if (!dont_go_left) {
               // if left lane free, go there 
               my_ref_lane = (my_ref_lane - 1);
@@ -217,7 +217,7 @@ int main() {
             }
           } else if (my_ref_vel < 49.5) {
             // if we are too slow, speed up (obeying max. accell. & velocity)
-            my_ref_vel += .224;
+            my_ref_vel += .3;
           }
 
           // create a list of widely spaced (x,y) waypoints, evenly spaced at
