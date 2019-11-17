@@ -2,9 +2,9 @@
 Self-Driving Car Engineer Nanodegree Program
 
 ### Reflection
-In this section, I am going to describe how I managed to pass each rubic point. I have tested the code and it can drive the car more than 10 miles without incidents. 
+In this section, I am going to describe how I managed to pass each rubic point. I have tested the code and the car is able to drive more than 10 miles without incidents. 
 
-### Decision make by sensor fusion data
+### Decision make by using sensor fusion data
 The path generation model follows the project walkthrough by Udacity. The following steps are applied (all line references in relationship to main.cpp):
 
 * First, we examine all data from sensor fusion, we then make decision based on their location and make prediction of those cars, those may be changing their lane, so we need to calculate their velocity of d and is make sure if they are changing lane. 
